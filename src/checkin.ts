@@ -4,9 +4,11 @@ import { dirname, join } from 'node:path'
 
 export type Result = { uid:string; nickname?:string; state:'signed'|'already'|'failed'; at:string; credit?:number; balance?:number; error?:string }
 type Credential = { uid:string; nickname?:string; accessToken:string; domain:string; enterpriseId?:string }
-type Saved = { day:string; checkedAt:string; results:Result[]; notice?:string }
+export type Saved = { day:string; checkedAt:string; results:Result[]; notice?:string }
 const authDir = () => join(homedir(),'Library','Application Support','CodeBuddyExtension','Data','Public','auth')
-export const statePath = () => join(process.env.DSH_HOME ?? join(homedir(),'.dsh'),'.workbuddy-checkin.json')
+export const statePath = () => join(process.env.DSH_HOME ?? join(homedir(),'.dsh'),'.buddy-checkin.json')
+/** Pre-rename state file, read as a fallback so upgrading keeps today's results (next save writes the new path). */
+const legacyStatePath = (path: string): string | undefined => path.endsWith('.buddy-checkin.json') ? path.replace(/\.buddy-checkin\.json$/u,'.workbuddy-checkin.json') : undefined
 const today = () => new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai'}).format(new Date())
 
 function string(v: unknown): string | undefined { return typeof v === 'string' && v !== '' ? v : undefined }
@@ -29,15 +31,38 @@ async function balance(c:Credential): Promise<number|undefined> {
 export async function check(c:Credential, now=new Date()): Promise<Result> {
   const at=now.toISOString(); try { const r=await fetch(`https://${c.domain}/v2/billing/meter/daily-checkin`,{method:'POST',headers:headers(c),body:'{}'}); const b=await r.json() as any; const already=string(b?.msg)?.includes('已签到') === true; if (!r.ok && !already) throw new Error(String(b?.msg ?? `HTTP ${r.status}`)); const total=await balance(c).catch(()=>undefined); return {uid:c.uid,...c.nickname ? {nickname:c.nickname}:{},state:already?'already':'signed',at,...!already&&typeof b?.data?.credit==='number'?{credit:b.data.credit}:{},...total===undefined?{}:{balance:total}} } catch(e) { return {uid:c.uid,...c.nickname ? {nickname:c.nickname}:{},state:'failed',at,error:e instanceof Error?e.message:String(e)} }
 }
-// A corrupt or wrong-shaped state file reads as "nothing saved" — the run that
-// writes it already succeeded once, so losing the memory must never take down
-// a startup check (a truncated write used to escape JSON.parse and kill run()).
 function savedDocument(parsed: unknown): Saved | undefined {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
   const d=parsed as Record<string, unknown>
   if (typeof d.day!=='string' || typeof d.checkedAt!=='string' || !Array.isArray(d.results)) return undefined
   return d as unknown as Saved
 }
-export async function load(path=statePath()): Promise<Saved|undefined> { try { return savedDocument(JSON.parse(await readFile(path,'utf8'))) } catch { return undefined } }
-export async function run(): Promise<Saved> { const previous=await load(); const day=today(); const prior=previous?.day===day ? previous.results : []; const completed=new Map(prior.filter(x=>x.state!=='failed').map(x=>[x.uid,x])); const accounts=await discover(); const attempted=await Promise.all(accounts.filter(c=>!completed.has(c.uid)).map(c=>check(c))); const results=accounts.map(c=>completed.get(c.uid)).filter((x):x is Result=>x!==undefined).concat(attempted); const ok=attempted.filter(x=>x.state!=='failed').length; const saved={day,checkedAt:new Date().toISOString(),results,...attempted.length===0?{}:{notice: attempted.some(x=>x.state==='failed') ? `WorkBuddy 签到 ${ok}/${attempted.length} 成功，失败账号将在下次启动重试` : `WorkBuddy 已完成今日签到：${ok} 个账号`}}; await mkdir(dirname(statePath()),{recursive:true}); const temporary=`${statePath()}.tmp`; await writeFile(temporary,JSON.stringify(saved),{mode:0o600}); await rename(temporary,statePath()); return saved }
+export async function load(path=statePath()): Promise<Saved|undefined> {
+  try { return savedDocument(JSON.parse(await readFile(path,'utf8'))) } catch {}
+  const legacy=legacyStatePath(path)
+  if (legacy===undefined) return undefined
+  try { return savedDocument(JSON.parse(await readFile(legacy,'utf8'))) } catch { return undefined }
+}
+async function save(saved: Saved, path=statePath()): Promise<Saved> {
+  await mkdir(dirname(path),{recursive:true})
+  const temporary=`${path}.tmp`
+  await writeFile(temporary,JSON.stringify(saved),{mode:0o600})
+  await rename(temporary,path)
+  return saved
+}
+export async function run(path=statePath()): Promise<Saved> {
+  const previous=await load(path); const day=today(); const prior=previous?.day===day ? previous.results : []; const completed=new Map(prior.filter(x=>x.state!=='failed').map(x=>[x.uid,x])); const accounts=await discover(); const attempted=await Promise.all(accounts.filter(c=>!completed.has(c.uid)).map(c=>check(c))); const results=accounts.map(c=>completed.get(c.uid)).filter((x):x is Result=>x!==undefined).concat(attempted); const ok=attempted.filter(x=>x.state!=='failed').length
+  return save({day,checkedAt:new Date().toISOString(),results,...attempted.length===0?{}:{notice: attempted.some(x=>x.state==='failed') ? `WorkBuddy 签到 ${ok}/${attempted.length} 成功，失败账号可在面板中重试` : `WorkBuddy 已完成今日签到：${ok} 个账号`}},path)
+}
+/** The panel only retries accounts that failed in today's startup attempt. */
+export async function retryFailed(path=statePath()): Promise<Saved> {
+  const previous=await load(path)
+  if (!previous || previous.day!==today()) return run(path)
+  const accounts=await discover()
+  const accountByUid=new Map(accounts.map(account=>[account.uid,account]))
+  const retried=await Promise.all(previous.results.filter(result=>result.state==='failed').flatMap(result=>{const account=accountByUid.get(result.uid); return account===undefined?[]:[check(account)]}))
+  const replacements=new Map(retried.map(result=>[result.uid,result]))
+  const results=accounts.flatMap(account=>{const result=replacements.get(account.uid) ?? previous.results.find(item=>item.uid===account.uid); return result===undefined?[]:[result]})
+  return save({day:previous.day,checkedAt:new Date().toISOString(),results},path)
+}
 export const status = (s:Saved) => s.results.length===0?'none':s.results.every(x=>x.state!=='failed')?'ok':s.results.some(x=>x.state!=='failed')?'warn':'error'
