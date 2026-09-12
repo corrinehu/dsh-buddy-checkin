@@ -1,3 +1,4 @@
 - insert:
-    - id: workbuddy-checkin
-      name: dsh-workbuddy-checkin
+    - id: buddy-checkin
+      name: dsh-buddy-checkin
+      config: {}

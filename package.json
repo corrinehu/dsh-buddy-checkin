@@ -1,12 +1,13 @@
 {
-  "name": "dsh-workbuddy-checkin",
-  "displayName": "DSH WorkBuddy Check-in",
+  "name": "dsh-buddy-checkin",
+  "displayName": "DSH Buddy Check-in",
   "version": "0.1.0",
   "type": "module",
   "main": "lib/index.mjs",
   "exports": {
     ".": "./lib/index.mjs",
     "./client": "./lib/client.js",
+    "./package.json": "./package.json",
     "./cordis.patch.yml": "./cordis.patch.yml"
   },
   "files": [
@@ -27,10 +28,10 @@
     },
     "client": {
       "inject": [
-        "@deepseek-ai/dsh-client-ui-renderer",
-        "@deepseek-ai/dsh-client-ui-conversation"
+        "slots"
       ],
-      "platform": "web"
+      "platform": "web",
+      "immediately": true
     }
   },
   "peerDependencies": {
