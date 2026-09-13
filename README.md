@@ -18,18 +18,18 @@ DSH 启动时自动为 WorkBuddy 国内版账号完成每日签到：扫描本�
 
 前置：本机安装并登录过 WorkBuddy 桌面 App（国内版）；DSH `0.1.5-rc.1` 及以上。
 
-尚未发布到 npm，先从 GitHub 或本地安装：
-
 ```sh
-# GitHub
+# npm（推荐）
+dsh plugin --profile web add dsh-buddy-checkin
+
+# 或 GitHub
 dsh plugin --profile web add github:corrinehu/dsh-buddy-checkin
-dsh web
 
 # 或本地开发（链接到本仓库，改完 pnpm run check 构建后重启 dsh 即生效）
 dsh plugin --profile web add <本仓库路径>
 ```
 
-在 macOS 的 DSH Web 与 Desktop 下验证通过。
+安装后启动 `dsh web`（或重启 Desktop）。在 macOS 的 DSH Web 与 Desktop 下验证通过。
 
 ## 已知限制
 
