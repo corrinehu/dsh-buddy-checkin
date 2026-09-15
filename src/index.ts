@@ -1,7 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { load, retryFailed, run, status } from './checkin.ts'
+import { load, refreshBalances, retryFailed, run, status } from './checkin.ts'
 
 export const name='dsh-buddy-checkin'
 export const inject=['webServer','clientModules']
@@ -15,13 +15,23 @@ function respond(res: ServerResponse, saved: Awaited<ReturnType<typeof load>>): 
 export function apply(ctx: Context): void {
   const modules=(ctx as Context & { clientModules: ClientModules }).clientModules
   ctx.logger.info(`client graph includes check-in: ${modules.graph().entries.some(entry=>entry.id==='dsh-buddy-checkin')}`)
-  void run().catch(error=>ctx.logger.warn(error))
-  ctx.inject(['webServer'], webCtx => webCtx.effect(()=>webCtx.webServer.register({
-    kind:'exact', path:'/buddy-checkin/status', handler:async(req: IncomingMessage,res: ServerResponse)=>{
-      if (!trusted(req)) { res.writeHead(403); res.end(); return }
-      if (req.method==='GET') { respond(res,await load()); return }
-      if (req.method==='POST') { respond(res,await retryFailed()); return }
-      res.writeHead(405,{allow:'GET, POST'}); res.end()
-    },
-  }),'dsh-buddy-checkin: status'))
+  const startup=run().catch(error=>{ctx.logger.warn(error); return undefined})
+  ctx.inject(['webServer'], webCtx => webCtx.effect(()=>{
+    const disposeStatus=webCtx.webServer.register({
+      kind:'exact', path:'/buddy-checkin/status', handler:async(req: IncomingMessage,res: ServerResponse)=>{
+        if (!trusted(req)) { res.writeHead(403); res.end(); return }
+        if (req.method==='GET') { await startup; respond(res,await load()); return }
+        if (req.method==='POST') { await startup; respond(res,await retryFailed()); return }
+        res.writeHead(405,{allow:'GET, POST'}); res.end()
+      },
+    })
+    const disposeBalance=webCtx.webServer.register({
+      kind:'exact', path:'/buddy-checkin/refresh-balance', handler:async(req: IncomingMessage,res: ServerResponse)=>{
+        if (!trusted(req)) { res.writeHead(403); res.end(); return }
+        if (req.method==='POST') { await startup; respond(res,await refreshBalances()); return }
+        res.writeHead(405,{allow:'POST'}); res.end()
+      },
+    })
+    return ()=>{disposeStatus();disposeBalance()}
+  },'dsh-buddy-checkin: status'))
 }

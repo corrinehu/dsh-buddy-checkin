@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { discover, status, authDirFor } from '../src/checkin.ts'
+import { discover, refreshBalances, status, authDirFor } from '../src/checkin.ts'
 
 describe('WorkBuddy auth directory', () => {
   it('reads %LOCALAPPDATA% on Windows', () => {
@@ -58,5 +58,23 @@ it('marks the day already signed by the upstream message, not its exact spelling
     const { check } = await import('../src/checkin.ts')
     const result=await check({uid:'a',accessToken:'token',domain:'www.workbuddy.cn'})
     expect(result.state).toBe('already')
+  } finally { vi.unstubAllGlobals() }
+})
+
+it('refreshes balances without calling daily check-in', async () => {
+  const dir=await mkdtemp(join(tmpdir(),'workbuddy-checkin-'))
+  const path=join(dir,'state.json')
+  await writeFile(path,JSON.stringify({day:'2026-09-15',checkedAt:'2026-09-15T08:00:00.000Z',results:[{uid:'a',state:'already',at:'2026-09-15T08:00:00.000Z',balance:1000}]}))
+  const calls:string[]=[]
+  vi.stubGlobal('fetch', vi.fn(async (url:unknown) => {
+    calls.push(String(url))
+    return new Response(JSON.stringify({code:0,data:{Response:{Data:{Accounts:[{CycleCapacityRemain:800}]}}}}),{status:200})
+  }))
+  try {
+    const saved=await refreshBalances(path,[{uid:'a',accessToken:'token',domain:'www.workbuddy.cn'}])
+    expect(saved?.checkedAt).toBe('2026-09-15T08:00:00.000Z')
+    expect(saved?.balanceCheckedAt).toBeTypeOf('string')
+    expect(saved?.results.at(0)?.balance).toBe(800)
+    expect(calls).toEqual(['https://www.workbuddy.cn/v2/billing/meter/get-user-resource'])
   } finally { vi.unstubAllGlobals() }
 })

@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path'
 
 export type Result = { uid:string; nickname?:string; state:'signed'|'already'|'failed'; at:string; credit?:number; balance?:number; error?:string }
 type Credential = { uid:string; nickname?:string; accessToken:string; domain:string; enterpriseId?:string }
-export type Saved = { day:string; checkedAt:string; results:Result[]; notice?:string }
+export type Saved = { day:string; checkedAt:string; balanceCheckedAt?:string; results:Result[]; notice?:string }
 /** The shared login store WorkBuddy's desktop app writes: Application Support on macOS, %LOCALAPPDATA% on Windows. */
 export const authDirFor = (platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env, home = homedir()): string => platform === 'win32'
   ? join(env.LOCALAPPDATA ?? join(home,'AppData','Local'),'CodeBuddyExtension','Data','Public','auth')
@@ -54,9 +54,23 @@ async function save(saved: Saved, path=statePath()): Promise<Saved> {
   await rename(temporary,path)
   return saved
 }
+/** Refresh balances without repeating the daily check-in. */
+export async function refreshBalances(path=statePath(), accounts?:Credential[]): Promise<Saved|undefined> {
+  const previous=await load(path)
+  if (!previous) return undefined
+  const discovered=accounts ?? await discover()
+  const accountByUid=new Map(discovered.map(account=>[account.uid,account]))
+  const results=await Promise.all(previous.results.map(async result=>{
+    const account=accountByUid.get(result.uid)
+    if (account===undefined) return result
+    const total=await balance(account).catch(()=>undefined)
+    return total===undefined ? result : {...result,balance:total}
+  }))
+  return save({...previous,balanceCheckedAt:new Date().toISOString(),results},path)
+}
 export async function run(path=statePath()): Promise<Saved> {
-  const previous=await load(path); const day=today(); const prior=previous?.day===day ? previous.results : []; const completed=new Map(prior.filter(x=>x.state!=='failed').map(x=>[x.uid,x])); const accounts=await discover(); const attempted=await Promise.all(accounts.filter(c=>!completed.has(c.uid)).map(c=>check(c))); const results=accounts.map(c=>completed.get(c.uid)).filter((x):x is Result=>x!==undefined).concat(attempted); const ok=attempted.filter(x=>x.state!=='failed').length
-  return save({day,checkedAt:new Date().toISOString(),results,...attempted.length===0?{}:{notice: attempted.some(x=>x.state==='failed') ? `WorkBuddy 签到 ${ok}/${attempted.length} 成功，失败账号可在面板中重试` : `WorkBuddy 已完成今日签到：${ok} 个账号`}},path)
+  const previous=await load(path); const day=today(); const sameDay=previous?.day===day; const prior=sameDay ? previous.results : []; const completed=new Map(prior.filter(x=>x.state!=='failed').map(x=>[x.uid,x])); const accounts=await discover(); const attempted=await Promise.all(accounts.filter(c=>!completed.has(c.uid)).map(c=>check(c))); const results=accounts.map(c=>completed.get(c.uid)).filter((x):x is Result=>x!==undefined).concat(attempted); const ok=attempted.filter(x=>x.state!=='failed').length
+  return save({day,checkedAt:new Date().toISOString(),results,...sameDay&&previous?.balanceCheckedAt?{balanceCheckedAt:previous.balanceCheckedAt}:{},...attempted.length===0?{}:{notice: attempted.some(x=>x.state==='failed') ? `WorkBuddy 签到 ${ok}/${attempted.length} 成功，失败账号可在面板中重试` : `WorkBuddy 已完成今日签到：${ok} 个账号`}},path)
 }
 /** The panel only retries accounts that failed in today's startup attempt. */
 export async function retryFailed(path=statePath()): Promise<Saved> {
@@ -67,6 +81,6 @@ export async function retryFailed(path=statePath()): Promise<Saved> {
   const retried=await Promise.all(previous.results.filter(result=>result.state==='failed').flatMap(result=>{const account=accountByUid.get(result.uid); return account===undefined?[]:[check(account)]}))
   const replacements=new Map(retried.map(result=>[result.uid,result]))
   const results=accounts.flatMap(account=>{const result=replacements.get(account.uid) ?? previous.results.find(item=>item.uid===account.uid); return result===undefined?[]:[result]})
-  return save({day:previous.day,checkedAt:new Date().toISOString(),results},path)
+  return save({day:previous.day,checkedAt:new Date().toISOString(),results,...previous.balanceCheckedAt?{balanceCheckedAt:previous.balanceCheckedAt}:{}},path)
 }
 export const status = (s:Saved) => s.results.length===0?'none':s.results.every(x=>x.state!=='failed')?'ok':s.results.some(x=>x.state!=='failed')?'warn':'error'
