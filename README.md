@@ -29,7 +29,7 @@ dsh plugin --profile web add github:corrinehu/dsh-buddy-checkin
 dsh plugin --profile web add <本仓库路径>
 ```
 
-安装后启动 `dsh web`（或重启 Desktop）。在 macOS 的 DSH Web 与 Desktop 下验证通过。
+安装后启动 `dsh web`（或重启 Desktop）。在 macOS 与 Windows 的 DSH Web 与 Desktop 下验证通过。
 
 ## 已知限制
 
