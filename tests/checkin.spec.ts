@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { discover, refreshBalances, status, authDirFor } from '../src/checkin.ts'
+import { discover, refreshBalances, status, authDirFor, authDirsFor } from '../src/checkin.ts'
 
 describe('WorkBuddy auth directory', () => {
   it('reads %LOCALAPPDATA% on Windows', () => {
@@ -11,9 +11,28 @@ describe('WorkBuddy auth directory', () => {
   it('falls back to AppData\\Local when Windows leaves LOCALAPPDATA unset', () => {
     expect(authDirFor('win32',{},'C:\\Users\\me')).toBe(join('C:\\Users\\me','AppData','Local','CodeBuddyExtension','Data','Public','auth'))
   })
-  it('keeps Application Support on macOS and Linux', () => {
+  it('uses Application Support on macOS and .config on Linux', () => {
     expect(authDirFor('darwin',{},'/Users/me')).toBe(join('/Users/me','Library','Application Support','CodeBuddyExtension','Data','Public','auth'))
-    expect(authDirFor('linux',{},'/home/me')).toBe(join('/home/me','Library','Application Support','CodeBuddyExtension','Data','Public','auth'))
+    expect(authDirFor('linux',{},'/home/me')).toBe(join('/home/me','.config','CodeBuddyExtension','Data','Public','auth'))
+  })
+  it('orders Windows Local before Roaming, including environment fallbacks', () => {
+    const suffix=['CodeBuddyExtension','Data','Public','auth']
+    expect(authDirsFor('win32',{LOCALAPPDATA:'/local',APPDATA:'/roaming'},'/user')).toEqual([join('/local',...suffix),join('/roaming',...suffix)])
+    expect(authDirsFor('win32',{},'/user')).toEqual([join('/user','AppData','Local',...suffix),join('/user','AppData','Roaming',...suffix)])
+  })
+  it('falls back past missing, empty or invalid Local stores and prefers valid Local credentials', async () => {
+    const root=await mkdtemp(join(tmpdir(),'checkin-fallback-'))
+    const local=join(root,'Local'), roaming=join(root,'Roaming')
+    const doc=(nickname:string)=>JSON.stringify({account:{uid:'a',nickname},auth:{accessToken:'token',domain:'example.test'}})
+    await mkdir(roaming)
+    await writeFile(join(roaming,'workbuddy-desktop.info'),doc('roaming'))
+    expect(await discover([local,roaming])).toMatchObject([{nickname:'roaming'}])
+    await mkdir(local)
+    expect(await discover([local,roaming])).toMatchObject([{nickname:'roaming'}])
+    await writeFile(join(local,'workbuddy-desktop.info'),'invalid json')
+    expect(await discover([local,roaming])).toMatchObject([{nickname:'roaming'}])
+    await writeFile(join(local,'workbuddy-desktop.info'),doc('local'))
+    expect(await discover([local,roaming])).toMatchObject([{nickname:'local'}])
   })
 })
 

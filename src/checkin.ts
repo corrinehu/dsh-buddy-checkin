@@ -5,11 +5,14 @@ import { dirname, join } from 'node:path'
 export type Result = { uid:string; nickname?:string; state:'signed'|'already'|'failed'; at:string; credit?:number; balance?:number; balanceCheckedAt?:string; balanceError?:string; error?:string }
 type Credential = { uid:string; nickname?:string; accessToken:string; domain:string; enterpriseId?:string }
 export type Saved = { day:string; checkedAt:string; balanceCheckedAt?:string; results:Result[]; notice?:string }
-/** The shared login store WorkBuddy's desktop app writes: Application Support on macOS, %LOCALAPPDATA% on Windows. */
-export const authDirFor = (platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env, home = homedir()): string => platform === 'win32'
-  ? join(env.LOCALAPPDATA ?? join(home,'AppData','Local'),'CodeBuddyExtension','Data','Public','auth')
-  : join(home,'Library','Application Support','CodeBuddyExtension','Data','Public','auth')
-const authDir = () => authDirFor()
+/** Windows prefers Local, with Roaming for older desktop versions. */
+export function authDirsFor(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env, home = homedir()): string[] {
+  const bases=platform==='win32'
+    ? [env.LOCALAPPDATA || join(home,'AppData','Local'),env.APPDATA || join(home,'AppData','Roaming')]
+    : [platform==='darwin' ? join(home,'Library','Application Support') : join(home,'.config')]
+  return [...new Set(bases.map(base=>join(base,'CodeBuddyExtension','Data','Public','auth')))]
+}
+export const authDirFor = (platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env, home = homedir()): string => authDirsFor(platform,env,home)[0]!
 export const statePath = () => join(process.env.DSH_HOME ?? join(homedir(),'.dsh'),'.buddy-checkin.json')
 /** Pre-rename state file, read as a fallback so upgrading keeps today's results (next save writes the new path). */
 const legacyStatePath = (path: string): string | undefined => path.endsWith('.buddy-checkin.json') ? path.replace(/\.buddy-checkin\.json$/u,'.workbuddy-checkin.json') : undefined
@@ -23,10 +26,13 @@ function credential(raw: unknown): Credential | undefined {
   const nickname = string(a?.nickname)
   return uid && accessToken && domain ? {uid,accessToken,domain,...nickname === undefined ? {} : {nickname}} : undefined
 }
-export async function discover(dir=authDir()): Promise<Credential[]> {
+export async function discover(dirs:string|readonly string[]=authDirsFor()): Promise<Credential[]> {
+  for (const dir of typeof dirs==='string' ? [dirs] : dirs) {
   const files=await readdir(dir).catch(()=>[] as string[]); const latest=new Map<string,{c:Credential; name:string}>()
   for(const name of files) { if (!(name==='workbuddy-desktop.info'||/^workbuddy-desktop\.\d{4}-/u.test(name))) continue; let raw: unknown=null; try { raw=JSON.parse(await readFile(join(dir,name),'utf8')) } catch {} const c=credential(raw); if(c && (latest.get(c.uid)?.name ?? '') < name) latest.set(c.uid,{c,name}) }
-  return [...latest.values()].map(x=>x.c)
+    if (latest.size>0) return [...latest.values()].map(x=>x.c)
+  }
+  return []
 }
 function headers(c:Credential): Record<string,string> { return {'content-type':'application/json','authorization':`Bearer ${c.accessToken}`,'x-user-id':c.uid,'x-domain':c.domain,...c.enterpriseId ? {'x-enterprise-id':c.enterpriseId,'x-tenant-id':c.enterpriseId} : {}} }
 async function balance(c:Credential): Promise<number|undefined> {
