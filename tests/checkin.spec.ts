@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { discover, refreshBalances, status, authDirFor } from '../src/checkin.ts'
@@ -15,6 +15,40 @@ describe('WorkBuddy auth directory', () => {
     expect(authDirFor('darwin',{},'/Users/me')).toBe(join('/Users/me','Library','Application Support','CodeBuddyExtension','Data','Public','auth'))
     expect(authDirFor('linux',{},'/home/me')).toBe(join('/home/me','Library','Application Support','CodeBuddyExtension','Data','Public','auth'))
   })
+})
+
+it('keeps concurrent check-in success on disk and in the balance response', async () => {
+  const dir=await mkdtemp(join(tmpdir(),'workbuddy-checkin-'))
+  const path=join(dir,'state.json')
+  const before={day:'2026-09-15',checkedAt:'x',results:[{uid:'a',state:'failed',at:'x',balance:1000}]}
+  const after={...before,results:[{uid:'a',state:'signed',at:'y',credit:100,balance:900}]}
+  await writeFile(path,JSON.stringify(before))
+  vi.stubGlobal('fetch',vi.fn(async()=>{
+    await writeFile(path,JSON.stringify(after))
+    return new Response(JSON.stringify({code:0,data:{Response:{Data:{Accounts:[{CycleCapacityRemain:800}]}}}}))
+  }))
+  try{
+    const result=await refreshBalances(path,[{uid:'a',accessToken:'token',domain:'example.test'}])
+    expect(result?.results[0]).toMatchObject({state:'signed',credit:100,balance:800})
+    expect(JSON.parse(await readFile(path,'utf8'))).toEqual(after)
+  }finally{vi.unstubAllGlobals()}
+})
+
+it('marks failed and missing-credential balance queries without claiming an update', async () => {
+  const dir=await mkdtemp(join(tmpdir(),'workbuddy-checkin-'))
+  const path=join(dir,'state.json')
+  const saved={day:'2026-09-15',checkedAt:'x',results:['a','b'].map(uid=>({uid,state:'already',at:'x',balance:1000}))}
+  await writeFile(path,JSON.stringify(saved))
+  vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify({code:401}),{status:401})))
+  try{
+    const result=await refreshBalances(path,[{uid:'a',accessToken:'token',domain:'example.test'}])
+    for(const row of result?.results??[]){
+      expect(row.balance).toBe(1000)
+      expect(row.balanceError).toBeTypeOf('string')
+      expect(row.balanceCheckedAt).toBeUndefined()
+    }
+    expect(JSON.parse(await readFile(path,'utf8'))).toEqual(saved)
+  }finally{vi.unstubAllGlobals()}
 })
 
 describe('WorkBuddy account discovery', () => {
@@ -73,7 +107,7 @@ it('refreshes balances without calling daily check-in', async () => {
   try {
     const saved=await refreshBalances(path,[{uid:'a',accessToken:'token',domain:'www.workbuddy.cn'}])
     expect(saved?.checkedAt).toBe('2026-09-15T08:00:00.000Z')
-    expect(saved?.balanceCheckedAt).toBeTypeOf('string')
+    expect(saved?.results.at(0)?.balanceCheckedAt).toBeTypeOf('string')
     expect(saved?.results.at(0)?.balance).toBe(800)
     expect(calls).toEqual(['https://www.workbuddy.cn/v2/billing/meter/get-user-resource'])
   } finally { vi.unstubAllGlobals() }

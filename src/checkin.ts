@@ -2,7 +2,7 @@ import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-export type Result = { uid:string; nickname?:string; state:'signed'|'already'|'failed'; at:string; credit?:number; balance?:number; error?:string }
+export type Result = { uid:string; nickname?:string; state:'signed'|'already'|'failed'; at:string; credit?:number; balance?:number; balanceCheckedAt?:string; balanceError?:string; error?:string }
 type Credential = { uid:string; nickname?:string; accessToken:string; domain:string; enterpriseId?:string }
 export type Saved = { day:string; checkedAt:string; balanceCheckedAt?:string; results:Result[]; notice?:string }
 /** The shared login store WorkBuddy's desktop app writes: Application Support on macOS, %LOCALAPPDATA% on Windows. */
@@ -30,7 +30,7 @@ export async function discover(dir=authDir()): Promise<Credential[]> {
 }
 function headers(c:Credential): Record<string,string> { return {'content-type':'application/json','authorization':`Bearer ${c.accessToken}`,'x-user-id':c.uid,'x-domain':c.domain,...c.enterpriseId ? {'x-enterprise-id':c.enterpriseId,'x-tenant-id':c.enterpriseId} : {}} }
 async function balance(c:Credential): Promise<number|undefined> {
-  const r=await fetch(`https://${c.domain}/v2/billing/meter/get-user-resource`,{method:'POST',headers:headers(c),body:JSON.stringify({PageNumber:1,PageSize:100,ProductCode:'p_tcaca',Status:[0,3]})}); const b=await r.json() as any; const a=b?.data?.Response?.Data?.Accounts; return Array.isArray(a) ? a.reduce((n,x)=>n+(typeof x?.CycleCapacityRemain==='number'?x.CycleCapacityRemain:0),0) : undefined
+  const r=await fetch(`https://${c.domain}/v2/billing/meter/get-user-resource`,{method:'POST',headers:headers(c),signal:AbortSignal.timeout(15000),body:JSON.stringify({PageNumber:1,PageSize:100,ProductCode:'p_tcaca',Status:[0,3]})}); const b=await r.json() as any; const a=b?.data?.Response?.Data?.Accounts; return r.ok && (b?.code===undefined || b.code===0) && Array.isArray(a) ? a.reduce((n,x)=>n+(typeof x?.CycleCapacityRemain==='number'?x.CycleCapacityRemain:0),0) : undefined
 }
 export async function check(c:Credential, now=new Date()): Promise<Result> {
   const at=now.toISOString(); try { const r=await fetch(`https://${c.domain}/v2/billing/meter/daily-checkin`,{method:'POST',headers:headers(c),body:'{}'}); const b=await r.json() as any; const already=string(b?.msg)?.includes('已签到') === true; if (!r.ok && !already) throw new Error(String(b?.msg ?? `HTTP ${r.status}`)); const total=await balance(c).catch(()=>undefined); return {uid:c.uid,...c.nickname ? {nickname:c.nickname}:{},state:already?'already':'signed',at,...!already&&typeof b?.data?.credit==='number'?{credit:b.data.credit}:{},...total===undefined?{}:{balance:total}} } catch(e) { return {uid:c.uid,...c.nickname ? {nickname:c.nickname}:{},state:'failed',at,error:e instanceof Error?e.message:String(e)} }
@@ -62,11 +62,19 @@ export async function refreshBalances(path=statePath(), accounts?:Credential[]):
   const accountByUid=new Map(discovered.map(account=>[account.uid,account]))
   const results=await Promise.all(previous.results.map(async result=>{
     const account=accountByUid.get(result.uid)
-    if (account===undefined) return result
+    if (account===undefined) return {...result,balanceError:'未找到登录凭据，显示上次记录'}
     const total=await balance(account).catch(()=>undefined)
-    return total===undefined ? result : {...result,balance:total}
+    return total===undefined ? {...result,balanceError:'余额查询失败，显示上次记录'} : {...result,balance:total,balanceCheckedAt:new Date().toISOString()}
   }))
-  return save({...previous,balanceCheckedAt:new Date().toISOString(),results},path)
+  // Balance observations are response-only: never overwrite concurrent check-in writes.
+  const latest=await load(path)
+  if (!latest || latest.day!==previous.day) return latest
+  const observations=new Map(results.map(result=>[result.uid,result]))
+  return {...latest,results:latest.results.map(result=>{
+    const observed=observations.get(result.uid)
+    if (!observed) return result
+    return {...result,...observed.balance===undefined?{}:{balance:observed.balance},...observed.balanceCheckedAt?{balanceCheckedAt:observed.balanceCheckedAt}:{},...observed.balanceError?{balanceError:observed.balanceError}:{}}
+  })}
 }
 export async function run(path=statePath()): Promise<Saved> {
   const previous=await load(path); const day=today(); const sameDay=previous?.day===day; const prior=sameDay ? previous.results : []; const completed=new Map(prior.filter(x=>x.state!=='failed').map(x=>[x.uid,x])); const accounts=await discover(); const attempted=await Promise.all(accounts.filter(c=>!completed.has(c.uid)).map(c=>check(c))); const results=accounts.map(c=>completed.get(c.uid)).filter((x):x is Result=>x!==undefined).concat(attempted); const ok=attempted.filter(x=>x.state!=='failed').length
