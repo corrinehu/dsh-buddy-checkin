@@ -2,7 +2,20 @@ import { describe, expect, it, vi } from 'vitest'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { discover, status } from '../src/checkin.ts'
+import { discover, status, authDirFor } from '../src/checkin.ts'
+
+describe('WorkBuddy auth directory', () => {
+  it('reads %LOCALAPPDATA% on Windows', () => {
+    expect(authDirFor('win32',{LOCALAPPDATA:'C:\\Users\\me\\AppData\\Local'},'C:\\Users\\me')).toBe(join('C:\\Users\\me\\AppData\\Local','CodeBuddyExtension','Data','Public','auth'))
+  })
+  it('falls back to AppData\\Local when Windows leaves LOCALAPPDATA unset', () => {
+    expect(authDirFor('win32',{},'C:\\Users\\me')).toBe(join('C:\\Users\\me','AppData','Local','CodeBuddyExtension','Data','Public','auth'))
+  })
+  it('keeps Application Support on macOS and Linux', () => {
+    expect(authDirFor('darwin',{},'/Users/me')).toBe(join('/Users/me','Library','Application Support','CodeBuddyExtension','Data','Public','auth'))
+    expect(authDirFor('linux',{},'/home/me')).toBe(join('/home/me','Library','Application Support','CodeBuddyExtension','Data','Public','auth'))
+  })
+})
 
 describe('WorkBuddy account discovery', () => {
   it('uses the newest domestic backup per account and ignores WorkBuddy AI', async () => {

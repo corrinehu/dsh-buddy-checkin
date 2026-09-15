@@ -5,7 +5,11 @@ import { dirname, join } from 'node:path'
 export type Result = { uid:string; nickname?:string; state:'signed'|'already'|'failed'; at:string; credit?:number; balance?:number; error?:string }
 type Credential = { uid:string; nickname?:string; accessToken:string; domain:string; enterpriseId?:string }
 export type Saved = { day:string; checkedAt:string; results:Result[]; notice?:string }
-const authDir = () => join(homedir(),'Library','Application Support','CodeBuddyExtension','Data','Public','auth')
+/** The shared login store WorkBuddy's desktop app writes: Application Support on macOS, %LOCALAPPDATA% on Windows. */
+export const authDirFor = (platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env, home = homedir()): string => platform === 'win32'
+  ? join(env.LOCALAPPDATA ?? join(home,'AppData','Local'),'CodeBuddyExtension','Data','Public','auth')
+  : join(home,'Library','Application Support','CodeBuddyExtension','Data','Public','auth')
+const authDir = () => authDirFor()
 export const statePath = () => join(process.env.DSH_HOME ?? join(homedir(),'.dsh'),'.buddy-checkin.json')
 /** Pre-rename state file, read as a fallback so upgrading keeps today's results (next save writes the new path). */
 const legacyStatePath = (path: string): string | undefined => path.endsWith('.buddy-checkin.json') ? path.replace(/\.buddy-checkin\.json$/u,'.workbuddy-checkin.json') : undefined
