@@ -1,7 +1,7 @@
 {
   "name": "dsh-buddy-checkin",
   "displayName": "DSH Buddy Check-in",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DSH 启动时自动完成 WorkBuddy 国内版账号的每日签到 — runs the WorkBuddy (CN) daily check-in on DSH startup, claiming the daily credits.",
   "keywords": [
     "dsh-plugin",
