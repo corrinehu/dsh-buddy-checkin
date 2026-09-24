@@ -2,7 +2,16 @@ import { describe, expect, it, vi } from 'vitest'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { discover, refreshBalances, status, authDirFor, authDirsFor } from '../src/checkin.ts'
+import { discover, refreshBalances, retryFailed, run, status, authDirFor, authDirsFor } from '../src/checkin.ts'
+import { KeyUnavailableError, deriveProtectorKey, sealAuthFieldForTest, type KeySource } from '../src/desktop-credential-protection.ts'
+
+// run()/retryFailed() discover from authDirsFor(), which roots at homedir();
+// pointing homedir at a temp dir keeps them hermetic without a production seam.
+const { fakeHome } = vi.hoisted(() => ({ fakeHome: { value: '/' } }))
+vi.mock('node:os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:os')>()
+  return { ...actual, homedir: () => fakeHome.value }
+})
 
 describe('WorkBuddy auth directory', () => {
   it('reads %LOCALAPPDATA% on Windows', () => {
@@ -26,13 +35,93 @@ describe('WorkBuddy auth directory', () => {
     const doc=(nickname:string)=>JSON.stringify({account:{uid:'a',nickname},auth:{accessToken:'token',domain:'example.test'}})
     await mkdir(roaming)
     await writeFile(join(roaming,'workbuddy-desktop.info'),doc('roaming'))
-    expect(await discover([local,roaming])).toMatchObject([{nickname:'roaming'}])
+    expect(await discover([local,roaming])).toMatchObject({credentials:[{nickname:'roaming'}]})
     await mkdir(local)
-    expect(await discover([local,roaming])).toMatchObject([{nickname:'roaming'}])
+    expect(await discover([local,roaming])).toMatchObject({credentials:[{nickname:'roaming'}]})
     await writeFile(join(local,'workbuddy-desktop.info'),'invalid json')
-    expect(await discover([local,roaming])).toMatchObject([{nickname:'roaming'}])
+    expect(await discover([local,roaming])).toMatchObject({credentials:[{nickname:'roaming'}]})
     await writeFile(join(local,'workbuddy-desktop.info'),doc('local'))
-    expect(await discover([local,roaming])).toMatchObject([{nickname:'local'}])
+    expect(await discover([local,roaming])).toMatchObject({credentials:[{nickname:'local'}]})
+  })
+})
+
+describe('WorkBuddy 5.6 encrypted credentials', () => {
+  const secret=Buffer.from(Array.from({length:32},(_,i)=>i+1)).toString('base64')
+  const key=deriveProtectorKey(secret)
+  const keySource:KeySource=async()=>JSON.stringify({version:1,atRestSecretKey:secret})
+  const otherSecret=Buffer.from(Array.from({length:32},(_,i)=>255-i)).toString('base64')
+  const otherKeySource:KeySource=async()=>JSON.stringify({version:1,atRestSecretKey:otherSecret})
+  const encryptedDoc=(uid:string,token:string,nickname?:string)=>{
+    const account:Record<string,unknown>={uid}
+    if(nickname!==undefined) account.nickname=sealAuthFieldForTest(key,nickname)
+    return JSON.stringify({account,auth:{accessToken:sealAuthFieldForTest(key,token),domain:'www.workbuddy.cn'}})
+  }
+  const plaintextDoc=(uid:string,token:string)=>JSON.stringify({account:{uid},auth:{accessToken:token,domain:'www.workbuddy.cn'}})
+
+  it('decrypts the newest encrypted backup, including the sealed nickname', async () => {
+    const dir=await mkdtemp(join(tmpdir(),'checkin-enc-'))
+    await writeFile(join(dir,'workbuddy-desktop.2026-09-01T00-00-00-000Z.1.a.info'),plaintextDoc('a','old-token'))
+    await writeFile(join(dir,'workbuddy-desktop.2026-09-02T00-00-00-000Z.1.a.info'),encryptedDoc('a','new-token','音策'))
+    const source=vi.fn(keySource)
+    const d=await discover(dir,{keySource:source})
+    expect(d.credentials).toMatchObject([{uid:'a',accessToken:'new-token',nickname:'音策',domain:'www.workbuddy.cn'}])
+    expect(d.unreadable).toEqual([])
+    expect(source).toHaveBeenCalledTimes(1)
+  })
+  it('falls back to an older plaintext backup when the current key cannot open the newest envelope', async () => {
+    const dir=await mkdtemp(join(tmpdir(),'checkin-enc-'))
+    await writeFile(join(dir,'workbuddy-desktop.2026-09-01T00-00-00-000Z.1.a.info'),plaintextDoc('a','old-token'))
+    await writeFile(join(dir,'workbuddy-desktop.2026-09-02T00-00-00-000Z.1.a.info'),encryptedDoc('a','new-token'))
+    const d=await discover(dir,{keySource:otherKeySource})
+    expect(d.credentials).toMatchObject([{uid:'a',accessToken:'old-token'}])
+    expect(d.unreadable).toEqual([])
+  })
+  it('reports an account as unreadable when no backup can be opened', async () => {
+    const dir=await mkdtemp(join(tmpdir(),'checkin-enc-'))
+    await writeFile(join(dir,'workbuddy-desktop.info'),encryptedDoc('a','token'))
+    const d=await discover(dir,{keySource:otherKeySource})
+    expect(d.credentials).toEqual([])
+    expect(d.unreadable).toEqual([{uid:'a',reason:expect.stringContaining('重新登录')}])
+  })
+  it('reports the key-helper failure when the machine key cannot be obtained', async () => {
+    const dir=await mkdtemp(join(tmpdir(),'checkin-enc-'))
+    await writeFile(join(dir,'workbuddy-desktop.info'),encryptedDoc('a','token'))
+    const failing:KeySource=async()=>{throw new KeyUnavailableError('未找到 WorkBuddy 的 Electron 二进制；可用 WORKBUDDY_ELECTRON_BIN 指定')}
+    const d=await discover(dir,{keySource:failing})
+    expect(d.credentials).toEqual([])
+    expect(d.unreadable).toEqual([{uid:'a',reason:expect.stringContaining('凭据已加密')}])
+    expect(d.unreadable[0]?.reason).toContain('WORKBUDDY_ELECTRON_BIN')
+  })
+  it('never asks for a key on plaintext-only machines', async () => {
+    const dir=await mkdtemp(join(tmpdir(),'checkin-enc-'))
+    await writeFile(join(dir,'workbuddy-desktop.info'),plaintextDoc('a','plain'))
+    const source=vi.fn(keySource)
+    const d=await discover(dir,{keySource:source})
+    expect(d.credentials).toMatchObject([{uid:'a',accessToken:'plain'}])
+    expect(source).not.toHaveBeenCalled()
+  })
+  it('surfaces encrypted-unreadable accounts as failed rows in run()', async () => {
+    const root=await mkdtemp(join(tmpdir(),'checkin-run-'))
+    fakeHome.value=root
+    const authDir=join(root,'Library','Application Support','CodeBuddyExtension','Data','Public','auth')
+    await mkdir(authDir,{recursive:true})
+    await writeFile(join(authDir,'workbuddy-desktop.info'),encryptedDoc('a','token'))
+    const saved=await run(join(root,'state.json'),{keySource:otherKeySource})
+    expect(saved.results).toMatchObject([{uid:'a',state:'failed',error:expect.stringContaining('重新登录')}])
+    expect(saved.notice).toContain('0/1')
+  })
+  it('keeps unreadable rows on retry and never demotes today’s signed account', async () => {
+    const root=await mkdtemp(join(tmpdir(),'checkin-retry-'))
+    fakeHome.value=root
+    const authDir=join(root,'Library','Application Support','CodeBuddyExtension','Data','Public','auth')
+    await mkdir(authDir,{recursive:true})
+    await writeFile(join(authDir,'workbuddy-desktop.info'),encryptedDoc('a','token'))
+    const day=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai'}).format(new Date())
+    const path=join(root,'state.json')
+    await writeFile(path,JSON.stringify({day,checkedAt:'x',results:[{uid:'a',state:'failed',at:'x',error:'old'},{uid:'b',state:'signed',at:'x'}]}))
+    const out=await retryFailed(path,{keySource:otherKeySource})
+    expect(out.results.find(row=>row.uid==='a')).toMatchObject({state:'failed',error:expect.stringContaining('重新登录')})
+    expect(out.results.find(row=>row.uid==='b')).toMatchObject({state:'signed'})
   })
 })
 
@@ -78,7 +167,7 @@ describe('WorkBuddy account discovery', () => {
     await writeFile(join(dir,'workbuddy-desktop.2026-09-02T00-00-00-000Z.1.a.info'),doc('a','new'))
     await writeFile(join(dir,'workbuddy-desktop.info'),doc('b','current'))
     await writeFile(join(dir,'workbuddy-desktop-ai.2026-09-03T00-00-00-000Z.1.a.info'),doc('ai','must-ignore'))
-    expect(await discover(dir)).toMatchObject([{uid:'a',nickname:'new'},{uid:'b',nickname:'current'}])
+    expect(await discover(dir)).toMatchObject({credentials:[{uid:'a',nickname:'new'},{uid:'b',nickname:'current'}]})
   })
   it('makes a partial failure yellow', () => {
     expect(status({day:'2026-09-12',checkedAt:'x',results:[{uid:'a',state:'signed',at:'x'},{uid:'b',state:'failed',at:'x',error:'expired'}]})).toBe('warn')
