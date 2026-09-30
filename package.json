@@ -1,7 +1,7 @@
 {
   "name": "dsh-buddy-checkin",
   "displayName": "DSH Buddy Check-in",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "DSH 启动时自动完成 WorkBuddy 国内版账号的每日签到 — runs the WorkBuddy (CN) daily check-in on DSH startup, claiming the daily credits.",
   "keywords": [
     "dsh-plugin",
@@ -50,15 +50,15 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-host-webserver": "^0.1.5-rc.1 || ^0.1.7-rc.1",
+    "@deepseek-ai/dsh-host-webserver": "^0.1.5-rc.1 || ^0.1.7-rc.1 || 0.2.0-rc.1 || 0.2.0-rc.2",
     "react": "^18.2.0"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-client-ui-conversation": "0.1.7-rc.1",
-    "@deepseek-ai/dsh-client-ui-renderer": "^0.1.7-rc.1",
-    "@deepseek-ai/dsh-client-ui-slots": "^0.1.7-rc.1",
-    "@deepseek-ai/dsh-host-webserver": "^0.1.7-rc.1",
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-slots": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-host-webserver": "0.2.0-rc.2",
     "@types/node": "^22.20.0",
     "@types/react": "~18.3.1",
     "react": "^18.3.1",
