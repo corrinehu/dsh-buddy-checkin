@@ -1,6 +1,6 @@
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { homedir, release } from 'node:os'
+import { basename, dirname, join } from 'node:path'
 import { openAuthField, parseEnvelope, protectorKey, type KeySource, type WorkBuddyEnvelope } from './desktop-credential-protection.ts'
 
 export type Result = { uid:string; nickname?:string; state:'signed'|'already'|'failed'; at:string; credit?:number; balance?:number; balanceCheckedAt?:string; balanceError?:string; error?:string }
@@ -10,11 +10,48 @@ export type Saved = { day:string; checkedAt:string; balanceCheckedAt?:string; re
 export type Unreadable = { uid:string; reason:string }
 export type Discovery = { credentials:Credential[]; unreadable:Unreadable[] }
 export type DiscoveryOptions = { keySource?:KeySource }
-/** Windows prefers Local, with Roaming for older desktop versions. */
+/** Whether this Linux process is running inside Windows Subsystem for Linux. */
+function isWsl(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): boolean {
+  if (platform!=='linux') return false
+  if (env.WSL_DISTRO_NAME!==undefined || env.WSL_INTEROP!==undefined) return true
+  return release().toLowerCase().includes('microsoft')
+}
+/** Convert a Windows drive path to WSL's conventional /mnt/<drive> form; already-native paths pass through. */
+function windowsPathForWsl(value: string|undefined): string|undefined {
+  const path=value?.trim()
+  if (path===undefined || path==='') return undefined
+  if (path.startsWith('/')) return path
+  const drive=/^([a-z]):[\\/](.*)$/iu.exec(path)
+  return drive===null ? undefined : join('/mnt',drive[1]!.toLowerCase(),...drive[2]!.split(/[\\/]+/u))
+}
+/** Windows auth dirs seen from a WSL process, through its mounted Windows profile. */
+function wslWindowsBases(env: NodeJS.ProcessEnv, home: string): string[] {
+  const profile=windowsPathForWsl(env.USERPROFILE) ?? join('/mnt/c/Users',basename(home))
+  const local=windowsPathForWsl(env.LOCALAPPDATA) ?? join(profile,'AppData','Local')
+  const roaming=windowsPathForWsl(env.APPDATA) ?? join(profile,'AppData','Roaming')
+  return [local,roaming]
+}
+/** The XDG base for one env variable, or its platform default; an override is adopted only as a non-empty absolute path. */
+function xdgBase(env: NodeJS.ProcessEnv, name: string, fallback: string): string {
+  const value=env[name]?.trim()
+  return value!==undefined && value!=='' && value.startsWith('/') ? value : fallback
+}
+/**
+ * Windows prefers Local, with Roaming for older desktop versions. Linux probes
+ * both XDG bases — most distributions write under the config home, but
+ * UOS/deepin builds under the data home (workbuddy-connect #43). Under WSL
+ * the Windows-side auth dirs are probed first through the mounted profile
+ * (workbuddy-connect #4): the desktop app there is the Windows one, whose
+ * credentials live on the Windows disk.
+ */
 export function authDirsFor(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env, home = homedir()): string[] {
-  const bases=platform==='win32'
+  const bases = platform==='win32'
     ? [env.LOCALAPPDATA || join(home,'AppData','Local'),env.APPDATA || join(home,'AppData','Roaming')]
-    : [platform==='darwin' ? join(home,'Library','Application Support') : join(home,'.config')]
+    : platform==='darwin'
+      ? [join(home,'Library','Application Support')]
+      : isWsl(platform,env)
+        ? [...wslWindowsBases(env,home),xdgBase(env,'XDG_CONFIG_HOME',join(home,'.config')),xdgBase(env,'XDG_DATA_HOME',join(home,'.local','share'))]
+        : [xdgBase(env,'XDG_CONFIG_HOME',join(home,'.config')),xdgBase(env,'XDG_DATA_HOME',join(home,'.local','share'))]
   return [...new Set(bases.map(base=>join(base,'CodeBuddyExtension','Data','Public','auth')))]
 }
 export const authDirFor = (platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env, home = homedir()): string => authDirsFor(platform,env,home)[0]!

@@ -8,7 +8,7 @@ DSH 启动时自动为 WorkBuddy 国内版账号完成每日签到：扫描本�
 
 - **开箱即用**：装好即生效，DSH 启动时自动签到，无需配置；当天已签过的账号（含在 App 内手动签过的）自动跳过，多次重启不重复请求。
 - **深浅主题自适应**：图标与面板颜色跟随 DSH 外观。
-- **多账号自动发现**：读取 WorkBuddy 桌面 App 的共享登录目录，App 每次登录、切号都会留下带时间戳的凭据备份，**在本机登录过的国内版账号都会被找到**，按账号去重、各取最新一份凭据。
+- **多账号自动发现**：读取 WorkBuddy 桌面 App 的共享登录目录，App 每次登录、切号都会留下带时间戳的凭据备份，**在本机登录过的国内版账号都会被找到**，按账号去重、各取最新一份凭据。目录位置与 dsh-workbuddy-connect 同步（Windows Local/Roaming、macOS、Linux XDG 配置/数据目录，WSL 下优先探测挂载的 Windows 侧目录）。
 - **会话标题行入口**：标题行显示 WorkBuddy 图标、账号数和状态点（绿色全部已签，黄色部分失败、下次启动自动重试，红色全部失败）；没有国内版账号时不显示。
 - **详情面板**：点击入口查看每个账号的签到结果、签到时间、到账积分与最新剩余积分；每次打开都会重新查询余额，账号很多时列表限高滚动。
 - **重试失败账号**：面板一键只重试当天失败的账号，不动已成功的。
@@ -39,7 +39,8 @@ dsh plugin --profile web add <本仓库路径>
 - 不做账号管理与凭据续期；也不提供对已成功账号的手动重复签到。
 - 依赖 WorkBuddy 客户端接口（非官方开放 API），WorkBuddy 更新后插件可能需要随之调整。
 - **加密凭据**：兼容 WorkBuddy 5.6+ 的加密授权文件（自动借用本机 WorkBuddy App 的 Electron 获取解密密钥，密钥仅在内存中使用，不落盘、不外传）；旧版明文凭据同样支持，同一账号新旧文件并存时取最新可用的一份。
-- **Windows / Linux 读加密凭据**：需用 `WORKBUDDY_ELECTRON_BIN` 指定 WorkBuddy 的 Electron 二进制路径（明文凭据不受影响）。
+- **Windows 读加密凭据**：自动定位 WorkBuddy 的 Electron 二进制：先试默认安装位置（`%LOCALAPPDATA%\Programs\WorkBuddy`），再查 Windows 卸载注册表记录（与 dsh-workbuddy-connect 同步，含其 #66 的 Electron 宿主兼容）；自动定位覆盖不到时可用 `WORKBUDDY_ELECTRON_BIN` 显式指定（明文凭据不受影响）。
+- **Linux 读加密凭据**：需用 `WORKBUDDY_ELECTRON_BIN` 指定 WorkBuddy 的 Electron 二进制路径（明文凭据不受影响）。
 - **重装 App 后的旧备份**：由旧密钥加密的历史备份无法解开，对应账号会在面板显示失败并提示重新登录；在 App 里重新登录该账号即可恢复。
 
 ## 免责声明
