@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { discover, refreshBalances, retryFailed, run, status, authDirFor, authDirsFor } from '../src/checkin.ts'
+import { claimNotice, discover, refreshBalances, retryFailed, run, status, authDirFor, authDirsFor } from '../src/checkin.ts'
 import { KeyUnavailableError, deriveProtectorKey, sealAuthFieldForTest, resolveElectronPath, type KeySource, type RegistryRootQuery } from '../src/desktop-credential-protection.ts'
 
 // run()/retryFailed() discover from authDirsFor(), which roots at homedir();
@@ -395,4 +395,32 @@ it('refreshes balances without calling daily check-in', async () => {
     expect(saved?.results.at(0)?.balance).toBe(800)
     expect(calls).toEqual(['https://www.workbuddy.cn/v2/billing/meter/get-user-resource'])
   } finally { vi.unstubAllGlobals() }
+})
+
+describe('notice one-shot delivery (issue #2)', () => {
+  it('delivers the persisted notice once and strips it from the state file, keeping the rest', async () => {
+    const dir=await mkdtemp(join(tmpdir(),'checkin-notice-'))
+    const path=join(dir,'state.json')
+    const saved={day:'2026-10-08',checkedAt:'x',notice:'WorkBuddy 已完成今日签到：2 个账号',results:[{uid:'a',state:'signed',at:'x'},{uid:'b',state:'already',at:'x'}]}
+    await writeFile(path,JSON.stringify(saved))
+    const first=await claimNotice(path)
+    expect(first?.notice).toBe(saved.notice)
+    expect(first?.results).toEqual(saved.results)
+    const persisted=JSON.parse(await readFile(path,'utf8'))
+    expect(persisted.notice).toBeUndefined()
+    expect(persisted.day).toBe(saved.day)
+    expect(persisted.results).toEqual(saved.results)
+    // The remount after a session switch re-reads the same endpoint: no notice, no second toast.
+    const second=await claimNotice(path)
+    expect(second?.notice).toBeUndefined()
+    expect(second?.results).toEqual(saved.results)
+  })
+  it('returns the state untouched when there is no notice to claim, and undefined for a missing state', async () => {
+    const dir=await mkdtemp(join(tmpdir(),'checkin-notice-'))
+    const path=join(dir,'state.json')
+    await writeFile(path,JSON.stringify({day:'2026-10-08',checkedAt:'x',results:[]}))
+    await expect(claimNotice(path)).resolves.toMatchObject({day:'2026-10-08',results:[]})
+    expect(JSON.parse(await readFile(path,'utf8'))).toMatchObject({day:'2026-10-08'})
+    await expect(claimNotice(join(dir,'missing.json'))).resolves.toBeUndefined()
+  })
 })

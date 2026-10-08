@@ -1,7 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { load, refreshBalances, retryFailed, run, status } from './checkin.ts'
+import { claimNotice, load, refreshBalances, retryFailed, run, status } from './checkin.ts'
 
 export const name='dsh-buddy-checkin'
 export const inject=['webServer','clientModules']
@@ -20,7 +20,7 @@ export function apply(ctx: Context): void {
     const disposeStatus=webCtx.webServer.register({
       kind:'exact', path:'/buddy-checkin/status', handler:async(req: IncomingMessage,res: ServerResponse)=>{
         if (!trusted(req)) { res.writeHead(403); res.end(); return }
-        if (req.method==='GET') { await startup; respond(res,await load()); return }
+        if (req.method==='GET') { await startup; respond(res,await claimNotice()); return }
         if (req.method==='POST') { await startup; respond(res,await retryFailed()); return }
         res.writeHead(405,{allow:'GET, POST'}); res.end()
       },

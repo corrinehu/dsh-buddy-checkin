@@ -193,6 +193,24 @@ export async function refreshBalances(path=statePath(), accounts?:Credential[], 
     return {...result,...observed.balance===undefined?{}:{balance:observed.balance},...observed.balanceCheckedAt?{balanceCheckedAt:observed.balanceCheckedAt}:{},...observed.balanceError?{balanceError:observed.balanceError}:{}}
   })}
 }
+/**
+ * The state for a status response, handing a persisted notice to its first
+ * reader only: that read also strips the notice from the state file, so a
+ * remount or a second window no longer re-toasts it (issue #2). Only the
+ * notice is removed — re-reading before the write keeps any concurrent
+ * check-in/retry results, and a day change abandons the stale claim.
+ */
+export async function claimNotice(path=statePath()): Promise<Saved|undefined> {
+  const saved=await load(path)
+  if (saved===undefined || saved.notice===undefined) return saved
+  const latest=await load(path)
+  if (latest===undefined) return saved
+  if (latest.day!==saved.day) return latest
+  if (latest.notice===undefined) return latest
+  const {notice:_claimed,...withoutNotice}=latest
+  try { await save(withoutNotice,path) } catch {}
+  return latest
+}
 export async function run(path=statePath(), opts:DiscoveryOptions={}): Promise<Saved> {
   const previous=await load(path); const day=today(); const sameDay=previous?.day===day; const prior=sameDay ? previous.results : []; const completed=new Map(prior.filter(x=>x.state!=='failed').map(x=>[x.uid,x])); const {credentials,unreadable}=await discover(authDirsFor(),opts)
   const attempted=await Promise.all(credentials.filter(c=>!completed.has(c.uid)).map(c=>check(c)))
