@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { claimNotice, discover, refreshBalances, retryFailed, run, status, authDirFor, authDirsFor } from '../src/checkin.ts'
+import { claimNotice, discover, ensureToday, refreshBalances, retryFailed, run, status, authDirFor, authDirsFor } from '../src/checkin.ts'
 import { KeyUnavailableError, deriveProtectorKey, sealAuthFieldForTest, resolveElectronPath, type KeySource, type RegistryRootQuery } from '../src/desktop-credential-protection.ts'
 
 // run()/retryFailed() discover from authDirsFor(), which roots at homedir();
@@ -395,6 +395,72 @@ it('refreshes balances without calling daily check-in', async () => {
     expect(saved?.results.at(0)?.balance).toBe(800)
     expect(calls).toEqual(['https://www.workbuddy.cn/v2/billing/meter/get-user-resource'])
   } finally { vi.unstubAllGlobals() }
+})
+
+describe('day rollover on panel open (issue #3)', () => {
+  const shanghaiToday=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai'}).format(new Date())
+  const seed=async(root:string,day:string,results:unknown[])=>{
+    const authDir=join(root,'Library','Application Support','CodeBuddyExtension','Data','Public','auth')
+    await mkdir(authDir,{recursive:true})
+    await writeFile(join(authDir,'workbuddy-desktop.info'),JSON.stringify({account:{uid:'a'},auth:{accessToken:'token-a',domain:'www.workbuddy.cn'}}))
+    await writeFile(join(authDir,'workbuddy-desktop.2026-09-01T00-00-00-000Z.1.b.info'),JSON.stringify({account:{uid:'b'},auth:{accessToken:'token-b',domain:'www.workbuddy.cn'}}))
+    await writeFile(join(root,'state.json'),JSON.stringify({day,checkedAt:'x',results}))
+  }
+  const checkinStub=(checkinUrls:string[])=>vi.stubGlobal('fetch',vi.fn(async(url:unknown)=>{
+    const url_=String(url); if(url_.endsWith('/daily-checkin')) checkinUrls.push(url_)
+    return url_.endsWith('/daily-checkin')
+      ? new Response(JSON.stringify({code:0,msg:'OK',data:{credit:100}}),{status:200})
+      : new Response(JSON.stringify({code:0,data:{Response:{Data:{Accounts:[{CycleCapacityRemain:900}]}}}}),{status:200})
+  }))
+
+  it('a same-day run re-requests only unsigned or failed accounts, never today’s successes', async () => {
+    const root=await mkdtemp(join(tmpdir(),'checkin-manual-'))
+    fakeHome.value=root
+    const path=join(root,'state.json')
+    await seed(root,shanghaiToday(),[{uid:'a',state:'signed',at:'x',credit:100,balance:1000},{uid:'b',state:'failed',at:'x',error:'boom'}])
+    const calls:string[]=[]
+    checkinStub(calls)
+    try{
+      const saved=await run(path,{notice:false})
+      expect(calls).toHaveLength(1) // only the failed account b
+      expect(saved.results.find(row=>row.uid==='a')).toMatchObject({state:'signed',credit:100,balance:1000})
+      expect(saved.results.find(row=>row.uid==='b')).toMatchObject({state:'signed',credit:100})
+      expect(saved.notice).toBeUndefined()
+    }finally{vi.unstubAllGlobals()}
+  })
+
+  it('a run after midnight re-attempts every account and can suppress the toast', async () => {
+    const root=await mkdtemp(join(tmpdir(),'checkin-rollover-'))
+    fakeHome.value=root
+    const path=join(root,'state.json')
+    await seed(root,'2026-09-14',[{uid:'a',state:'signed',at:'x'},{uid:'b',state:'already',at:'x'}])
+    const calls:string[]=[]
+    checkinStub(calls)
+    try{
+      const saved=await run(path,{notice:false})
+      expect(saved.day).toBe(shanghaiToday())
+      expect(calls).toHaveLength(2) // yesterday's results no longer count: both accounts are attempted
+      expect(saved.notice).toBeUndefined()
+    }finally{vi.unstubAllGlobals()}
+  })
+
+  it('ensureToday leaves today’s state untouched and reruns only an older day', async () => {
+    const root=await mkdtemp(join(tmpdir(),'checkin-ensure-'))
+    fakeHome.value=root
+    const path=join(root,'state.json')
+    await seed(root,shanghaiToday(),[{uid:'a',state:'signed',at:'x'}])
+    const calls:string[]=[]
+    checkinStub(calls)
+    try{
+      const same=await ensureToday(path,{notice:false})
+      expect(same?.day).toBe(shanghaiToday())
+      expect(calls).toEqual([])
+      await seed(root,'2026-09-14',[{uid:'a',state:'signed',at:'x'}])
+      const rolled=await ensureToday(path,{notice:false})
+      expect(rolled?.day).toBe(shanghaiToday())
+      expect(calls.length).toBeGreaterThan(0)
+    }finally{vi.unstubAllGlobals()}
+  })
 })
 
 describe('notice one-shot delivery (issue #2)', () => {

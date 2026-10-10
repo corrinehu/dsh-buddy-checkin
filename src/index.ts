@@ -1,7 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { claimNotice, load, refreshBalances, retryFailed, run, status } from './checkin.ts'
+import { claimNotice, ensureToday, load, refreshBalances, retryFailed, run, status } from './checkin.ts'
 
 export const name='dsh-buddy-checkin'
 export const inject=['webServer','clientModules']
@@ -28,7 +28,9 @@ export function apply(ctx: Context): void {
     const disposeBalance=webCtx.webServer.register({
       kind:'exact', path:'/buddy-checkin/refresh-balance', handler:async(req: IncomingMessage,res: ServerResponse)=>{
         if (!trusted(req)) { res.writeHead(403); res.end(); return }
-        if (req.method==='POST') { await startup; respond(res,await refreshBalances()); return }
+        // Opening the panel is the lazy day-rollover trigger: a long-lived process signs the
+        // new day on the first panel interaction, then refreshes balances as before.
+        if (req.method==='POST') { await startup; await ensureToday(undefined,{notice:false}); respond(res,await refreshBalances()); return }
         res.writeHead(405,{allow:'POST'}); res.end()
       },
     })

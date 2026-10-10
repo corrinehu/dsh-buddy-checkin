@@ -211,14 +211,27 @@ export async function claimNotice(path=statePath()): Promise<Saved|undefined> {
   try { await save(withoutNotice,path) } catch {}
   return latest
 }
-export async function run(path=statePath(), opts:DiscoveryOptions={}): Promise<Saved> {
+export type RunOptions = DiscoveryOptions & { notice?: boolean }
+export async function run(path=statePath(), opts:RunOptions={}): Promise<Saved> {
   const previous=await load(path); const day=today(); const sameDay=previous?.day===day; const prior=sameDay ? previous.results : []; const completed=new Map(prior.filter(x=>x.state!=='failed').map(x=>[x.uid,x])); const {credentials,unreadable}=await discover(authDirsFor(),opts)
   const attempted=await Promise.all(credentials.filter(c=>!completed.has(c.uid)).map(c=>check(c)))
   const blocked=unreadable.filter(u=>!completed.has(u.uid)).map<Result>(u=>({uid:u.uid,state:'failed',at:new Date().toISOString(),error:u.reason}))
   const tried=[...attempted,...blocked]
   const results=credentials.map(c=>completed.get(c.uid)).filter((x):x is Result=>x!==undefined).concat(tried)
   const ok=tried.filter(x=>x.state!=='failed').length
-  return save({day,checkedAt:new Date().toISOString(),results,...sameDay&&previous?.balanceCheckedAt?{balanceCheckedAt:previous.balanceCheckedAt}:{},...tried.length===0?{}:{notice: tried.some(x=>x.state==='failed') ? `WorkBuddy 签到 ${ok}/${tried.length} 成功，失败账号可在面板中重试` : `WorkBuddy 已完成今日签到：${ok} 个账号`}},path)
+  // The panel-open rollover shows its outcome in the panel itself, so it skips the
+  // toast: a notice would toast some later page load out of nowhere.
+  const notice=opts.notice===false||tried.length===0 ? undefined : tried.some(x=>x.state==='failed') ? `WorkBuddy 签到 ${ok}/${tried.length} 成功，失败账号可在面板中重试` : `WorkBuddy 已完成今日签到：${ok} 个账号`
+  return save({day,checkedAt:new Date().toISOString(),results,...sameDay&&previous?.balanceCheckedAt?{balanceCheckedAt:previous.balanceCheckedAt}:{},...notice===undefined?{}:{notice}},path)
+}
+/**
+ * Interactive day-rollover guard for a long-lived DSH process: state stored for
+ * an earlier day triggers a fresh full attempt. run() never re-requests rows
+ * already signed or already credited today, so this is safe on every open.
+ */
+export async function ensureToday(path=statePath(), opts:RunOptions={}): Promise<Saved|undefined> {
+  const saved=await load(path)
+  return saved?.day===today() ? saved : run(path,opts)
 }
 /** The panel only retries accounts that failed in today's startup attempt. */
 export async function retryFailed(path=statePath(), opts:DiscoveryOptions={}): Promise<Saved> {
